@@ -46,12 +46,22 @@ class NurtureAlg[F[_]](
     logger.infoTotalTime(repo.show) {
       logger.attemptLog_(s"Nurture ${repo.show}") {
         for {
-          baseBranch <- cloneAndSync(repo)
+          baseBranch <- cloneAndSyncWithoutForking(repo)
           _ <- updateDependencies(repo, baseBranch)
           _ <- gitAlg.removeClone(repo)
         } yield ()
       }
     }
+
+  def cloneAndSyncWithoutForking(repo: Repo)(implicit F: MonadThrowable[F]): F[Branch] =
+    for {
+      _ <- logger.info(s"Clone and synchronize without forking ${repo.show}")
+      repoOut <- gitHubApiAlg.getRepoInfo(repo)
+      cloneUrl = util.uri.withUserInfo(repoOut.clone_url, config.gitHubLogin)
+      _ <- F.pure(println(s"Clone url - ${cloneUrl}"))
+      _ <- gitAlg.clone(repo, cloneUrl)
+      _ <- gitAlg.setAuthor(repo, config.gitAuthor)
+    } yield repoOut.default_branch
 
   def cloneAndSync(repo: Repo)(implicit F: MonadThrowable[F]): F[Branch] =
     for {
@@ -82,7 +92,7 @@ class NurtureAlg[F[_]](
   def processUpdate(data: UpdateData)(implicit F: BracketThrowable[F]): F[Unit] =
     for {
       _ <- logger.info(s"Process update ${data.update.show}")
-      head = github.headFor(config.gitHubLogin, data.update)
+      head = github.headFor(data.repo.owner, data.update) // TODO: Choose between forked owner and repo owner
       pullRequests <- gitHubApiAlg.listPullRequests(data.repo, head)
       _ <- pullRequests.headOption match {
         case Some(pr) if pr.isClosed =>
@@ -119,7 +129,7 @@ class NurtureAlg[F[_]](
   def createPullRequest(data: UpdateData)(implicit F: FlatMap[F]): F[Unit] =
     for {
       _ <- logger.info(s"Create PR ${data.updateBranch.name}")
-      requestData = NewPullRequestData.from(data, config.gitHubLogin)
+      requestData = NewPullRequestData.from(data, data.repo.owner) // TODO: Choose between fork vs non-fork
       pr <- gitHubApiAlg.createPullRequest(data.repo, requestData)
       _ <- pullRequestRepo.createOrUpdate(data.repo, pr.html_url, data.baseSha1, data.update)
       _ <- logger.info(s"Created PR ${pr.html_url}")

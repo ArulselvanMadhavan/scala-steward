@@ -21,7 +21,7 @@ import io.chrisdavenport.log4cats.Logger
 import org.scalasteward.core.application.Config
 import org.scalasteward.core.git.{GitAlg, Sha1}
 import org.scalasteward.core.github.GitHubApiAlg
-import org.scalasteward.core.github.data.{Repo, RepoOut}
+import org.scalasteward.core.github.data.{BranchOut, Repo, RepoOut}
 import org.scalasteward.core.sbt.SbtAlg
 import org.scalasteward.core.util
 import org.scalasteward.core.util.MonadThrowable
@@ -41,28 +41,67 @@ class DependencyService[F[_]](
       for {
         res <- gitHubApiAlg.createForkAndGetDefaultBranch(repo)
         (repoOut, branchOut) = res
-        foundSha1 <- dependencyRepository.findSha1(repo)
-        latestSha1 = branchOut.commit.sha
-        refreshRequired = foundSha1.fold(true)(_ =!= latestSha1)
+        refreshRequired <- decideAndRefreshDependencies(repo, branchOut)
         _ <- {
-          if (refreshRequired) refreshDependencies(repo, repoOut, latestSha1)
+          if (refreshRequired) refreshDependencies(repo, repoOut, branchOut.commit.sha)
           else F.unit
         }
       } yield ()
     }
 
-  def refreshDependencies(repo: Repo, repoOut: RepoOut, latestSha1: Sha1)(
-      implicit F: MonadThrowable[F]
-  ): F[Unit] =
+  private def decideAndRefreshDependencies(repo: Repo, branchOut: BranchOut)(
+      implicit F: MonadThrowable[F]): F[Boolean] =
+    for {
+      foundSha1 <- dependencyRepository.findSha1(repo)
+      latestSha1 = branchOut.commit.sha
+      refreshRequired = foundSha1.fold(true)(_ =!= latestSha1)
+    } yield refreshRequired
+
+  def checkDependenciesWithoutForking(repo: Repo)(implicit F: MonadThrowable[F]): F[Unit] =
+    logger.attemptLog_(s"check dependencies without forking ${repo.show}") {
+      for {
+        repoOut <- gitHubApiAlg.getRepoInfo(repo)
+        branchOut <- gitHubApiAlg.getDefaultBranch(repoOut)
+        refreshRequired <- decideAndRefreshDependencies(repo, branchOut)
+        _ <- {
+          if (refreshRequired)
+            refreshDependenciesForNonForkedRepo(repo, repoOut, branchOut.commit.sha)
+          else F.unit
+        }
+      } yield ()
+    }
+
+  private def cloneRepo(repo: Repo, repoOut: RepoOut)(implicit F: MonadThrowable[F]): F[Unit] =
     for {
       _ <- logger.info(s"Refresh dependencies of ${repo.show}")
       cloneUrl = util.uri.withUserInfo(repoOut.clone_url, config.gitHubLogin)
       _ <- gitAlg.clone(repo, cloneUrl)
-      parent <- repoOut.parentOrRaise[F]
-      parentCloneUrl = util.uri.withUserInfo(parent.clone_url, config.gitHubLogin)
-      _ <- gitAlg.syncFork(repo, parentCloneUrl, parent.default_branch)
+    } yield ()
+
+  private def updateDependencies(repo: Repo, latestSha1: Sha1)(
+      implicit F: MonadThrowable[F]): F[Unit] =
+    for {
       dependencies <- sbtAlg.getDependencies(repo)
       _ <- dependencyRepository.setDependencies(repo, latestSha1, dependencies)
       _ <- gitAlg.removeClone(repo)
+    } yield ()
+
+  private def refreshDependenciesForNonForkedRepo(repo: Repo, repoOut: RepoOut, latestSha1: Sha1)(
+      implicit F: MonadThrowable[F]): F[Unit] =
+    for {
+      _ <- cloneRepo(repo, repoOut)
+      // TODO: Think about switching to default branch.
+      _ <- updateDependencies(repo, latestSha1)
+    } yield ()
+
+  private def refreshDependencies(repo: Repo, repoOut: RepoOut, latestSha1: Sha1)(
+      implicit F: MonadThrowable[F]
+  ): F[Unit] =
+    for {
+      _ <- cloneRepo(repo, repoOut)
+      parent <- repoOut.parentOrRaise[F]
+      parentCloneUrl = util.uri.withUserInfo(parent.clone_url, config.gitHubLogin)
+      _ <- gitAlg.syncFork(repo, parentCloneUrl, parent.default_branch)
+      _ <- updateDependencies(repo, latestSha1)
     } yield ()
 }

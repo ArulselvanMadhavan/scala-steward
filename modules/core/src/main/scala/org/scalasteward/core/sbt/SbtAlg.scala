@@ -93,7 +93,7 @@ object SbtAlg {
         fileAlg.home.map(_ / ".sbt")
 
       def exec(command: Nel[String], repoDir: File): F[List[String]] =
-        ignoreOptsFiles(repoDir)(processAlg.execSandboxed(command, repoDir))
+        ignoreOptsFiles(repoDir)(processAlg.exec(command, repoDir)) // TODO: Fix Mac vs Linux
 
       def sbtCmd(command: String*): Nel[String] =
         Nel.of("sbt", "-batch", "-no-colors", command.mkString(";", ";", ""))

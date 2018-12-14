@@ -31,7 +31,8 @@ object steward extends IOApp {
         for {
           repos <- readRepos[IO](ctx.config.reposFile)
           _ <- prepareEnv(ctx)
-          _ <- repos.traverse(ctx.dependencyService.forkAndCheckDependencies)
+          _ <- repos
+            .traverse(ctx.dependencyService.checkDependenciesWithoutForking) // TODO: Choose fork vs non-fork
           allUpdates <- ctx.updateService.checkForUpdates(repos)
           reposToNurture <- ctx.updateService.filterByApplicableUpdates(repos, allUpdates)
           _ <- IO(reposToNurture.map(_.show).foreach(println))

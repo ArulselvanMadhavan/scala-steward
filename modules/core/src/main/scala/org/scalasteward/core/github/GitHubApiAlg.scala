@@ -59,4 +59,8 @@ trait GitHubApiAlg[F[_]] {
       repoOut: RepoOut
   ): F[BranchOut] =
     getBranch(repoOut.repo, repoOut.default_branch)
+
+  def getRepoInfo(
+      repo: Repo
+  ): F[RepoOut]
 }
